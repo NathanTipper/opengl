@@ -91,19 +91,20 @@ void shader_set_source(ShaderProgram* sp, ShaderType st, char* filename)
 }
 
 #define SHADER_SOURCE_BUFFER_SIZE 512
+#include <windows.h>
 bool shader_load(ShaderProgram* sp)
 {
-    char *shaderSourceBuffer[SHADER_SOURCE_BUFFER_SIZE];
-
+    void* buffer;
     for(int i = 0; i < SHADERTYPE_COUNT; ++i)
     {
         printf("Loading shader source %s...\n", sp->shader_source[i]);
-        if(!win32ReadFile(sp->shader_source[i], *shaderSourceBuffer, SHADER_SOURCE_BUFFER_SIZE))
+        if(!win32ReadFile(sp->shader_source[i], buffer))
         {
             printf("Could not read file %s", sp->shader_source[i]);
             return false;
         }
-        printf("Successfully read shader source %d!\n%s", i, *shaderSourceBuffer);
+
+        printf("\nShader source: %s", (char*)buffer);
 
         GLenum glShaderType;
         switch(i)
@@ -123,7 +124,8 @@ bool shader_load(ShaderProgram* sp)
         unsigned int shader;
         shader = glCreateShader(glShaderType);
         printf("Setting shader source!\n");
-        glShaderSource(shader, 1, shaderSourceBuffer, 0);
+        char* stringBuffer = (char*)buffer;
+        glShaderSource(shader, 1, &stringBuffer, 0);
         printf("Compiling Shader!\n");
         glCompileShader(shader);
 
@@ -145,6 +147,7 @@ bool shader_load(ShaderProgram* sp)
         sp->shaders[i] = shader;
     }
 
+    VirtualFree(buffer, sizeof(char) * SHADER_SOURCE_BUFFER_SIZE, MEM_RELEASE);
     return true;
 }
 

@@ -1,29 +1,36 @@
-#include "utils.h"
 #include <cstdio>
 #include <windows.h>
 // TODO: ^^^^ @ntipper FIND OUT HOW TO GET RID OF WINDOWS.H ^^^^
 
-bool win32ReadFile(char* filename, char* buffer, int bytesToRead)
+bool win32ReadFile(char* filename, void*& buffer)
 {
-    HANDLE fHandle = CreateFileA(filename, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-    if(!fHandle)
+    bool Result;
+    HANDLE fHandle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    if(fHandle == INVALID_HANDLE_VALUE)
     {
+	printf("Could not get handle to file");
 	return false;
     }
 
-    printf("Reading file %s", filename);
-    LPDWORD readBytes;
-    void* vbuffer[512];
-    if(ReadFile(fHandle, vbuffer, bytesToRead, readBytes, 0))
+    LARGE_INTEGER FileSize;
+    if(GetFileSizeEx(fHandle, &FileSize))
     {
-	printf("\nBytes to read: %d\nBytes read: %lu\nBuffer: %s\n", bytesToRead, *readBytes, buffer);
-    }
-    else
-    {
-	DWORD error = GetLastError();
-	printf("Could not read file.. error %lu occured", error);
-	return false;
+        unsigned int FileSize32 = (unsigned int)FileSize.QuadPart;
+	printf("File size: %ul", FileSize32);
+	buffer = VirtualAlloc(0, FileSize32, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	DWORD readBytes;
+	if(ReadFile(fHandle, buffer, FileSize32, &readBytes, 0))
+	{
+	    printf("Successfully read file... buffer: %s", (char*)buffer);
+	    Result = true;
+	}
+	else
+	{
+	    Result = false;
+	}
     }
 
-    return true;
+    CloseHandle(fHandle);
+
+    return Result;
 }
