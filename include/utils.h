@@ -1,6 +1,12 @@
 #ifndef UTILS_H
 #define UTILS_H
 
-bool win32ReadFile(char* filename, void*& buffer);
+struct Win32ReadFileResult
+{
+  long int filesize;
+  void* contents;
+};
+
+Win32ReadFileResult win32ReadFile(char* filename);
 
 #endif

@@ -94,17 +94,14 @@ void shader_set_source(ShaderProgram* sp, ShaderType st, char* filename)
 #include <windows.h>
 bool shader_load(ShaderProgram* sp)
 {
-    void* buffer;
     for(int i = 0; i < SHADERTYPE_COUNT; ++i)
     {
-        printf("Loading shader source %s...\n", sp->shader_source[i]);
-        if(!win32ReadFile(sp->shader_source[i], buffer))
+        Win32ReadFileResult rfr = win32ReadFile(sp->shader_source[i]);
+        if(!rfr.contents || !rfr.filesize)
         {
             printf("Could not read file %s", sp->shader_source[i]);
             return false;
         }
-
-        printf("\nShader source: %s", (char*)buffer);
 
         GLenum glShaderType;
         switch(i)
@@ -123,10 +120,8 @@ bool shader_load(ShaderProgram* sp)
 
         unsigned int shader;
         shader = glCreateShader(glShaderType);
-        printf("Setting shader source!\n");
-        char* stringBuffer = (char*)buffer;
+        char* stringBuffer = (char*)rfr.contents;
         glShaderSource(shader, 1, &stringBuffer, 0);
-        printf("Compiling Shader!\n");
         glCompileShader(shader);
 
         int success;
@@ -139,15 +134,12 @@ bool shader_load(ShaderProgram* sp)
             printf("Vertex Shader compilation failed: %s\n", infoLog);
             return false;
         }
-        else
-        {
-            printf("Vertex Shader compilation successful!\n");
-        }
 
         sp->shaders[i] = shader;
+	    VirtualFree(rfr.contents, rfr.filesize, MEM_RELEASE);
     }
 
-    VirtualFree(buffer, sizeof(char) * SHADER_SOURCE_BUFFER_SIZE, MEM_RELEASE);
+
     return true;
 }
 

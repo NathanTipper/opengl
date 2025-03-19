@@ -1,32 +1,32 @@
+#include "utils.h"
 #include <cstdio>
 #include <windows.h>
 // TODO: ^^^^ @ntipper FIND OUT HOW TO GET RID OF WINDOWS.H ^^^^
 
-bool win32ReadFile(char* filename, void*& buffer)
+Win32ReadFileResult win32ReadFile(char* filename)
 {
-    bool Result;
+    Win32ReadFileResult Result = {0};
     HANDLE fHandle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if(fHandle == INVALID_HANDLE_VALUE)
     {
 	printf("Could not get handle to file");
-	return false;
+	return Result;
     }
 
     LARGE_INTEGER FileSize;
     if(GetFileSizeEx(fHandle, &FileSize))
     {
         unsigned int FileSize32 = (unsigned int)FileSize.QuadPart;
-	printf("File size: %ul", FileSize32);
-	buffer = VirtualAlloc(0, FileSize32, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	Result.contents = VirtualAlloc(0, FileSize32, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 	DWORD readBytes;
-	if(ReadFile(fHandle, buffer, FileSize32, &readBytes, 0))
+	if(ReadFile(fHandle, Result.contents, FileSize32, &readBytes, 0) && FileSize32 == readBytes)
 	{
-	    printf("Successfully read file... buffer: %s", (char*)buffer);
-	    Result = true;
+	    Result.filesize = FileSize32;
 	}
 	else
 	{
-	    Result = false;
+	    VirtualFree(Result.contents, FileSize32, MEM_RELEASE);
+	    Result.filesize = 0;
 	}
     }
 
