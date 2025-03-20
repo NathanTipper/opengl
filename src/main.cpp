@@ -1,4 +1,3 @@
-#include <cmath>
 #include <cstdio>
 #include <glad/glad.h>
 #include <glfw3.h>
@@ -76,6 +75,7 @@ int main(void)
     glBindVertexArray(0);
 
     shader_use(&sp0);
+    shader_set_float(&sp0, (char*)"hoffset", 0.3f);
     while(!glfwWindowShouldClose(window))
     {
         processInput(window);

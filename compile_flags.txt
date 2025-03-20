@@ -1,2 +1,2 @@
 -I.\include\
-/DPLATFORM_WIN32 .\src\utils.cpp
+-DPLATFORM_WIN32=1

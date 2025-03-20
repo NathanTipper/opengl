@@ -1,8 +1,8 @@
 #include "utils.h"
 #include <cstdio>
-#include <windows.h>
-// TODO: ^^^^ @ntipper FIND OUT HOW TO GET RID OF WINDOWS.H ^^^^
 
+#ifdef PLATFORM_WIN32
+#include <windows.h>
 Win32ReadFileResult win32ReadFile(char* filename)
 {
     Win32ReadFileResult Result = {0};
@@ -34,3 +34,4 @@ Win32ReadFileResult win32ReadFile(char* filename)
 
     return Result;
 }
+#endif
