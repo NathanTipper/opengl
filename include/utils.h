@@ -9,6 +9,7 @@ struct Win32ReadFileResult
 };
 
 Win32ReadFileResult win32ReadFile(char* filename);
+void win32Free(void* vp, unsigned int size);
 #endif
 #endif
 

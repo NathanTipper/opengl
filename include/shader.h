@@ -23,6 +23,8 @@ bool shader_link(ShaderProgram* sp);
 void shader_set_int(ShaderProgram* sp, char* name, int value);
 void shader_set_float(ShaderProgram* sp, char* name, float value);
 void shader_set_source(ShaderProgram* sp, ShaderType st, char* filename);
+void shader_set_matrix(ShaderProgram* sp, char* name, float* value);
+void shader_set_vec3(ShaderProgram* sp, char* name, float v0, float v1, float v2);
 bool shader_load(ShaderProgram* sp);
 void shader_delete(ShaderProgram* sp);
 

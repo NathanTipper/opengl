@@ -42,7 +42,6 @@ bool shader_link(ShaderProgram* sp)
         return false;
     }
 
-    printf("Shader program linking succeeded!\n");
     for(int i = 0; i < SHADERTYPE_COUNT; ++i)
     {
         glDeleteShader(sp->shaders[i]);
@@ -69,6 +68,18 @@ void shader_set_int(ShaderProgram* sp, char* name, int value)
     glUniform1i(uniformLocation, value);
 }
 
+void shader_set_matrix(ShaderProgram *sp, char *name, float* value)
+{
+    unsigned int uniformLocation = glGetUniformLocation(sp->id, name);
+    glUniformMatrix4fv(uniformLocation, 1, GL_FALSE, value);
+}
+
+void shader_set_vec3(ShaderProgram *sp, char *name, float v0, float v1, float v2)
+{
+    unsigned int uniformLocation = glGetUniformLocation(sp->id, name);
+    glUniform3f(uniformLocation, v0, v1, v2);
+}
+
 void shader_set_source(ShaderProgram* sp, ShaderType st, char* filename)
 {
     char *c = filename;
@@ -90,8 +101,6 @@ void shader_set_source(ShaderProgram* sp, ShaderType st, char* filename)
     sp->shader_source[st][stringIndex] = '\0';
 }
 
-#define SHADER_SOURCE_BUFFER_SIZE 512
-#include <windows.h>
 bool shader_load(ShaderProgram* sp)
 {
     for(int i = 0; i < SHADERTYPE_COUNT; ++i)
@@ -136,9 +145,8 @@ bool shader_load(ShaderProgram* sp)
         }
 
         sp->shaders[i] = shader;
-	    VirtualFree(rfr.contents, rfr.filesize, MEM_RELEASE);
+        win32Free(rfr.contents, rfr.filesize);
     }
-
 
     return true;
 }

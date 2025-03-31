@@ -34,4 +34,9 @@ Win32ReadFileResult win32ReadFile(char* filename)
 
     return Result;
 }
+
+void win32Free(void *vp, unsigned int size)
+{
+    VirtualFree(&vp, size, MEM_RELEASE);
+}
 #endif
