@@ -7,6 +7,7 @@
 #include "glm/ext/quaternion_geometric.hpp"
 #include "glm/ext/vector_float3.hpp"
 #include "glm/geometric.hpp"
+#include "glm/matrix.hpp"
 #include "glm/trigonometric.hpp"
 #include "shader.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -38,25 +39,26 @@ global_variable float fov = 45.0f;
 void processInput(GLFWwindow* window)
 {
     float cameraSpeed = CAMERA_SPEED * deltaTime;
+    glm::vec3 projCameraFrontToXZ = cameraFront * glm::vec3(1.f, 0.f, 1.f);
     if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
     {
         glfwSetWindowShouldClose(window, 1);
     }
     if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
     {
-        cameraPos += cameraSpeed * cameraFront;
+        cameraPos += cameraSpeed * projCameraFrontToXZ;
     }
     if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
     {
-        cameraPos -= cameraSpeed * cameraFront;
+        cameraPos -= cameraSpeed * projCameraFrontToXZ;
     }
     if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
     {
-        cameraPos += cameraSpeed * glm::normalize(glm::cross(cameraFront, cameraUp));
+        cameraPos += cameraSpeed * glm::normalize(glm::cross(projCameraFrontToXZ, cameraUp));
     }
     if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
     {
-        cameraPos -= cameraSpeed * glm::normalize(glm::cross(cameraFront, cameraUp));
+        cameraPos -= cameraSpeed * glm::normalize(glm::cross(projCameraFrontToXZ, cameraUp));
     }
 }
 
@@ -100,6 +102,33 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     glViewport(0, 0, width, height);
 }
 
+glm::mat4 lookAt(glm::vec3 pos, glm::vec3 target, glm::vec3 up)
+{
+    glm::mat4 Result = glm::mat4(1.0f);
+
+    glm::vec3 dir = glm::normalize(pos - target);
+    glm::vec3 right = glm::normalize(glm::cross(glm::normalize(up), dir));
+    glm::vec3 cameraUp = glm::cross(dir, right);
+
+    glm::mat4 translation = glm::mat4(1.0f);
+    translation[3][0] = -pos.x;
+    translation[3][1] = -pos.y;
+    translation[3][2] = -pos.z;
+    glm::mat4 rotation = glm::mat4(1.0f);
+    rotation[0][0] = right.x;
+    rotation[1][0] = right.y;
+    rotation[2][0] = right.z;
+    rotation[0][1] = cameraUp.x;
+    rotation[1][1] = cameraUp.y;
+    rotation[2][1] = cameraUp.z;
+    rotation[0][2] = dir.x;
+    rotation[1][2] = dir.y;
+    rotation[2][2] = dir.z;
+
+    Result = rotation * translation;
+    return Result;
+}
+
 int main(void)
 {
     glfwInit();
@@ -141,67 +170,71 @@ int main(void)
     shader_load(&sp0);
     shader_link(&sp0);
 
+    ShaderProgram lightSourceShader;
+    shader_init(&lightSourceShader);
+    shader_set_source(&lightSourceShader, SHADERTYPE_VERTEX, (char*)"..\\shaders\\shader.vert");
+    shader_set_source(&lightSourceShader, SHADERTYPE_FRAGMENT, (char*)"..\\shaders\\light.frag");
+    shader_load(&lightSourceShader);
+    shader_link(&lightSourceShader);
+
     float vertices[] = {
-        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 
 
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,
 
-        -0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
 
-         0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
 
-        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 1.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
 
-        -0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f, 1.0f
-    };
-
-    int indices[] = {
-        0,1,3,
-        1,2,3
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f
     };
 
     glm::vec3 cubePositions[] = {
-    glm::vec3( 0.0f,  0.0f,  0.0f), 
-    glm::vec3( 2.0f,  5.0f, -15.0f), 
-    glm::vec3(-1.5f, -2.2f, -2.5f),  
-    glm::vec3(-3.8f, -2.0f, -12.3f),  
-    glm::vec3( 2.4f, -0.4f, -3.5f),  
-    glm::vec3(-1.7f,  3.0f, -7.5f),  
-    glm::vec3( 1.3f, -2.0f, -2.5f),  
-    glm::vec3( 1.5f,  2.0f, -2.5f), 
-    glm::vec3( 1.5f,  0.2f, -1.5f), 
-    glm::vec3(-1.3f,  1.0f, -1.5f)  
-};
+        glm::vec3( 0.0f,  0.0f,  0.0f), 
+        glm::vec3( 2.0f,  5.0f, -15.0f), 
+        glm::vec3(-1.5f, -2.2f, -2.5f),  
+        glm::vec3(-3.8f, -2.0f, -12.3f),  
+        glm::vec3( 2.4f, -0.4f, -3.5f),  
+        glm::vec3(-1.7f,  3.0f, -7.5f),  
+        glm::vec3( 1.3f, -2.0f, -2.5f),  
+        glm::vec3( 1.5f,  2.0f, -2.5f), 
+        glm::vec3( 1.5f,  0.2f, -1.5f), 
+        glm::vec3(-1.3f,  1.0f, -1.5f)  
+    };
+
+    glm::vec3 lightPos(1.2, 1.0f, 2.0f);
 
     uint VBO, VAO, EBO;
     glGenVertexArrays(1, &VAO);
@@ -213,15 +246,19 @@ int main(void)
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(0);
-
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
+    // Light source
+    uint lightVAO;
+    glGenVertexArrays(1, &lightVAO);
+    glBindVertexArray(lightVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
     // LOAD TEXTURE
     unsigned int texture0;
     glGenTextures(1, &texture0);
@@ -305,22 +342,32 @@ int main(void)
         float radius = 10.0f;
         float camX = sin(glfwGetTime()) * radius;
         float camZ = cos(glfwGetTime()) * radius;
-        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+        glm::mat4 view = lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         shader_set_matrix(&sp0, (char*)("projection"), glm::value_ptr(proj));
         shader_set_matrix(&sp0, (char*)("view"), glm::value_ptr(view));
+        shader_set_vec3(&sp0, (char*)("objectColor"), 1.0f, 0.5f, 0.31f);
+        shader_set_vec3(&sp0, (char*)("lightColor"), 1.0f, 1.0f, 1.0f);
+        shader_set_vec3(&sp0, (char*)("lightPos"), lightPos.x, lightPos.y, lightPos.z);
+        shader_set_vec3(&sp0, (char*)("viewPos"), cameraPos.x, cameraPos.y, cameraPos.z);
+
         glBindVertexArray(VAO);
-        for(uint i = 0; i < 10; ++i)
-        {
-            glm::mat4 model = glm::mat4(1.f);
-            model = glm::translate(model, cubePositions[i]);
-            if(i % 3 == 0)
-            {
-                float angle = (float)glfwGetTime() * glm::radians(45.f);
-                model = glm::rotate(model, angle, glm::vec3(1.f, 0.3f, 0.5f));
-            }
-            shader_set_matrix(&sp0, (char*)"model", glm::value_ptr(model));
-            glDrawArrays(GL_TRIANGLES, 0, 36);
-        }
+        glm::mat4 model = glm::mat4(1.f);
+        model = glm::translate(model, cubePositions[0]);
+        shader_set_matrix(&sp0, (char*)"model", glm::value_ptr(model));
+
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        model = glm::mat4(1.0f);
+        model = glm::translate(model, lightPos);
+        model = glm::scale(model, glm::vec3(0.2f));
+
+        shader_use(&lightSourceShader);
+        shader_set_matrix(&lightSourceShader, (char*)("projection"), glm::value_ptr(proj));
+        shader_set_matrix(&lightSourceShader, (char*)("view"), glm::value_ptr(view));
+        shader_set_matrix(&lightSourceShader, (char*)("model"), glm::value_ptr(model));
+
+        glBindVertexArray(lightVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -332,6 +379,7 @@ int main(void)
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);
     shader_delete(&sp0);
+    shader_delete(&lightSourceShader);
     glfwTerminate();
     return 0;
 }
