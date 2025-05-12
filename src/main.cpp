@@ -1,8 +1,11 @@
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <glad/glad.h>
 #include <glfw3.h>
+#include "assimp/material.h"
 #include "glm/detail/qualifier.hpp"
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_float4x4.hpp"
@@ -15,6 +18,10 @@
 #include "shader.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+// TODO:@ntipper ^ Write my own image importer as a fun project!
+
+
+#include "utils.h"
 
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
@@ -22,11 +29,16 @@
 
 #include "nmath.h"
 
-// TODO:@ntipper ^ Write my own image importer as a fun project!
+// Model loading using assimp
+#include "assimp/Importer.hpp"
+#include "assimp/scene.h"
+#include "assimp/postprocess.h"
+
+#include <vector>
 
 typedef unsigned int uint;
 #define global_variable static
-#define CAMERA_SPEED 2.5f
+#define CAMERA_SPEED 5.f
 global_variable glm::vec3 cameraPos;
 global_variable glm::vec3 cameraFront;
 global_variable glm::vec3 cameraUp;
@@ -39,46 +51,70 @@ global_variable float yaw = -90.0f;
 global_variable float pitch = 0.0f;
 global_variable float fov = 45.0f;
 
-static bool
-MakeHex(glm::vec3 center, float sideLength, float* outVertexList)
+#define LOG(a) printf("\n%s\n", a);
+struct Vertex 
 {
-    if(!outVertexList)
-    {
-        return false;
-    }
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 tc;
+    glm::vec3 tangent;
+    glm::vec3 bitangent;
+};
 
-    float orientation = 30.0f;
-    int currentVertex = 0;
-    glm::vec3 startingPosition = { center.x + sideLength, center.y, center.z };
-    glm::mat3 rotationMatrix = glm::mat3(1.0f);
+struct Texture 
+{
+    uint id;
+    char* type;
+    aiString path;
+};
 
-    for(int i = 1; i <= 6; ++i)
-    {
-        float vertexRotation = orientation + (60.0f * (i - 1));
-        rotationMatrix[0][0] = cos(glm::radians(vertexRotation));
-        rotationMatrix[0][2] = -sin(glm::radians(vertexRotation));
-        rotationMatrix[2][0] = sin(glm::radians(vertexRotation));
-        rotationMatrix[2][2] = cos(glm::radians(vertexRotation));
+struct Mesh
+{
+    std::vector<Vertex> vertices;
+    std::vector<uint> indices;
+    std::vector<Texture> textures;
 
-        glm::vec3 vertexPosition = rotationMatrix * startingPosition;
-        outVertexList[currentVertex++] = vertexPosition.x;
-        outVertexList[currentVertex++] = vertexPosition.y;
-        outVertexList[currentVertex++] = vertexPosition.z;
-    }
+    uint VAO;
+    uint VBO;
+    uint EBO;
+};
 
-    return false;
-}
+struct Hex
+{
+    glm::vec3 position;
+    glm::vec3 vertices[7];
+    uint indices[18];
+    glm::vec3 color;
 
-uint LoadImage(char* filename)
+    uint VAO;
+    uint VBO;
+    uint EBO;
+};
+
+#define MODEL_DIRECTORY_BUFFER_SIZE 128
+struct Model
+{
+    std::vector<Mesh> meshes;
+    std::vector<Texture> textures_loaded;
+
+    char directory[MODEL_DIRECTORY_BUFFER_SIZE];
+};
+
+#define PATH_BUFFER_SIZE 256
+uint TextureFromFile(char* filename, char* directory, bool gamma)
 {
     uint Result = 0;
 
+    char path[PATH_BUFFER_SIZE];
+    path[0] = '\0';
+    strcat_s(path, PATH_BUFFER_SIZE, directory);
+    strcat_s(path, PATH_BUFFER_SIZE, filename);
     glGenTextures(1, &Result);
     glBindTexture(GL_TEXTURE_2D, Result);
 
-    // stbi_set_flip_vertically_on_load(true);
+    stbi_set_flip_vertically_on_load(true);
     int width, height, nrChannels;
-    unsigned char* data = stbi_load(filename, &width, &height, &nrChannels, 0);
+    unsigned char* data = stbi_load(path, &width, &height, &nrChannels, 0);
 
     if(data)
     {
@@ -112,10 +148,301 @@ uint LoadImage(char* filename)
     return Result;
 }
 
+void mesh_setup(Mesh* mesh)
+{
+    if(!mesh)
+    {
+        return;
+    }
+
+    glGenVertexArrays(1, &mesh->VAO);
+    glGenBuffers(1, &mesh->VBO);
+    glGenBuffers(1, &mesh->EBO);
+
+    glBindVertexArray(mesh->VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, mesh->VBO);
+    glBufferData(GL_ARRAY_BUFFER, mesh->vertices.size() * sizeof(Vertex), &mesh->vertices[0], GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh->indices.size() * sizeof(uint), &mesh->indices[0], GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, tc));
+}
+
+#define MESH_DRAW_DIGIT_MAX 256
+void mesh_draw(Mesh* mesh, ShaderProgram* shader)
+{
+    uint diffuseNr = 1;
+    uint specularNr = 1;
+
+    char uniformName[512];
+    for(unsigned int i = 0; i < mesh->textures.size(); ++i)
+    {
+        //strcat_s(uniformName, "material.");
+        glActiveTexture(GL_TEXTURE0 + i);
+        char number[MESH_DRAW_DIGIT_MAX];
+        strcat_s(uniformName, mesh->textures[i].type);
+
+        if(stringEqual(mesh->textures[i].type, (char*)"texture_diffuse"))
+        {
+            intToString(diffuseNr++, number, MESH_DRAW_DIGIT_MAX);
+        }
+        else if(stringEqual(mesh->textures[i].type, (char*)"texture_specular"))
+        {
+            intToString(specularNr, number, MESH_DRAW_DIGIT_MAX);
+        }
+
+        strcat_s(uniformName, number);
+        shader_set_int(shader, uniformName, i);
+        glBindTexture(GL_TEXTURE_2D, mesh->textures[i].id);
+
+        uniformName[0] = '\0';
+    }
+
+
+    glBindVertexArray(mesh->VAO);
+    glDrawElements(GL_TRIANGLES, static_cast<uint>(mesh->indices.size()), GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+static std::vector<Texture>
+loadMaterialTextures(Model* model, aiMaterial* mat, aiTextureType type, char* typeName)
+{
+    std::vector<Texture> textures;
+    for(uint i = 0; i < mat->GetTextureCount(type); ++i)
+    {
+        aiString str;
+        mat->GetTexture(type, i, &str);
+        bool skip = false;
+        for(uint j = 0; j < model->textures_loaded.size(); ++j)
+        {
+            if(std::strcmp(model->textures_loaded[j].path.C_Str(), str.C_Str()) == 0)
+            {
+                textures.push_back(model->textures_loaded[j]);
+                skip = true;
+                break;
+            }
+        }
+
+        if(!skip)
+        {
+            Texture texture;
+            texture.id = TextureFromFile(const_cast<char*>(str.C_Str()), model->directory, false);
+            texture.type = typeName;
+            texture.path = str;
+            textures.push_back(texture);
+            model->textures_loaded.push_back(texture);
+        }
+    }
+    return textures;
+}
+
+static Mesh 
+mesh_process(Model* model, aiMesh* mesh, const aiScene* scene)
+{
+    Mesh Result;
+
+    std::vector<Vertex> vertices;
+    std::vector<uint> indices;
+    std::vector<Texture> textures;
+
+    for(uint i = 0; i < mesh->mNumVertices; ++i)
+    {
+        Vertex vertex;
+        vertex.position.x = mesh->mVertices[i].x;
+        vertex.position.y = mesh->mVertices[i].y;
+        vertex.position.z = mesh->mVertices[i].z;
+
+        vertex.normal.x = mesh->mNormals[i].x;
+        vertex.normal.y = mesh->mNormals[i].y;
+        vertex.normal.z = mesh->mNormals[i].z;
+
+        if(mesh->mTextureCoords[0])
+        {
+            vertex.tc.x = mesh->mTextureCoords[0][i].x;
+            vertex.tc.y = mesh->mTextureCoords[0][i].y;
+
+            vertex.tangent.x = mesh->mTangents[i].x;
+            vertex.tangent.y = mesh->mTangents[i].y;
+            vertex.tangent.z = mesh->mTangents[i].z;
+
+            vertex.bitangent.x = mesh->mBitangents[i].x;
+            vertex.bitangent.y = mesh->mBitangents[i].y;
+            vertex.bitangent.z = mesh->mBitangents[i].z;
+        }
+        else
+        {
+            vertex.tc = glm::vec2(0.f, 0.f);
+        }
+        vertices.push_back(vertex);
+    }
+
+    for(uint i = 0; i < mesh->mNumFaces; ++i)
+    {
+        aiFace face = mesh->mFaces[i];
+        for(uint j = 0; j < face.mNumIndices; ++j)
+        {
+            indices.push_back(face.mIndices[j]);
+        }
+    }
+
+    if(mesh->mMaterialIndex >= 0)
+    {
+        aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+
+        std::vector<Texture> diffuseMaps = loadMaterialTextures(model, mat, aiTextureType_DIFFUSE, "texture_diffuse");
+        textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
+
+        std::vector<Texture> specularMaps = loadMaterialTextures(model, mat, aiTextureType_SPECULAR, "texture_specular");
+        textures.insert(textures.end(), specularMaps.begin(), specularMaps.end());
+
+        std::vector<Texture> normalMaps = loadMaterialTextures(model, mat, aiTextureType_NORMALS, "texture_normal");
+        normalMaps.insert(textures.end(), normalMaps.begin(), normalMaps.end());
+
+        std::vector<Texture> heightMaps = loadMaterialTextures(model, mat, aiTextureType_HEIGHT, "texture_height");
+        normalMaps.insert(textures.end(), normalMaps.begin(), normalMaps.end());
+    }
+
+    Result.vertices = vertices;
+    Result.indices = indices;
+    Result.textures = textures;
+
+    mesh_setup(&Result);
+
+    return Result;
+}
+
+static void
+model_process_node(Model* model, aiNode* node, const aiScene* scene)
+{
+    for(uint i = 0; i < node->mNumMeshes; ++i)
+    {
+        aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+        model->meshes.push_back(mesh_process(model, mesh, scene));
+    }
+
+    for(uint i = 0; i < node->mNumChildren; ++i)
+    {
+        model_process_node(model, node->mChildren[i], scene);
+    }
+}
+
+static void
+model_load(Model* model, char* path)
+{
+    Assimp::Importer import;
+    const aiScene* scene = import.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace);
+
+    if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+    {
+        printf("\nASSIMP COULD NOT LOAD MODEL. Error: %s\n", import.GetErrorString());
+        return;
+    }
+
+    substring(model->directory, MODEL_DIRECTORY_BUFFER_SIZE, path, 0, findLastInString(path, '\\'));
+    model_process_node(model, scene->mRootNode, scene);
+}
+
+static void
+model_draw(Model* model, ShaderProgram* shader)
+{
+    for(uint i = 0; i < model->meshes.size(); ++i)
+    {
+        mesh_draw(&model->meshes[i], shader);
+    }
+}
+
+static Hex 
+MakeHex(glm::vec3 center, float sideLength, glm::vec3 color)
+{
+    Hex Result;
+    float orientation = 30.0f;
+    glm::vec3 currentVertex = glm::vec3(0.f);
+    glm::vec3 startingPosition = { center.x + sideLength, center.y, center.z };
+    glm::mat3 rotationMatrix = glm::mat3(1.0f);
+
+    Result.vertices[0] = center;
+    for(int i = 1; i < 7; ++i)
+    {
+        float vertexRotation = orientation + (60.0f * (i - 1));
+        rotationMatrix[0][0] = cos(glm::radians(vertexRotation));
+        rotationMatrix[0][2] = -sin(glm::radians(vertexRotation));
+        rotationMatrix[2][0] = sin(glm::radians(vertexRotation));
+        rotationMatrix[2][2] = cos(glm::radians(vertexRotation));
+
+        glm::vec3 vertexPosition = rotationMatrix * startingPosition;
+        Result.vertices[i] = vertexPosition;
+    }
+
+    uint indicesIndex = 0;
+    for(uint i = 1; i < 7; ++i)
+    {
+        uint next = i+1 >= 7 ? 1 : i + 1;
+        Result.indices[indicesIndex++] = 0;
+        Result.indices[indicesIndex++] = i;
+        Result.indices[indicesIndex++] = next;
+        printf("\nFace index: %u\nNext index: %u\nIndices index: %u\n", i, next, indicesIndex);
+    }
+
+    Result.color = color;
+    Result.position = center;
+
+    glGenVertexArrays(1, &Result.VAO);
+    glGenBuffers(1, &Result.VBO);
+    glGenBuffers(1, &Result.EBO);
+
+    glBindVertexArray(Result.VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, Result.VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(Result.vertices), &Result.vertices[0], GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, Result.EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(Result.indices), &Result.indices[0], GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    return Result;
+}
+
+static bool
+CreateHexMap(uint hex_size, uint rows, uint cols, Hex* out_hex_map)
+{
+    if(!out_hex_map)
+    {
+        return false;
+    }
+
+    for(uint i = 0; i < rows; ++i)
+    {
+        for(uint j = 0; j < cols; ++j)
+        {
+        }
+    }
+    return true;
+}
+
+static void
+DrawHex(Hex* hex)
+{
+    glBindVertexArray(hex->VAO);
+    glDrawElements(GL_TRIANGLES, sizeof(hex->vertices), GL_UNSIGNED_INT, 0);
+}
+
 void processInput(GLFWwindow* window)
 {
     float cameraSpeed = CAMERA_SPEED * deltaTime;
-    glm::vec3 projCameraFrontToXZ = cameraFront * glm::vec3(1.f, 0.f, 1.f);
+    glm::vec3 projCameraFrontToXZ = cameraFront;
     if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
     {
         glfwSetWindowShouldClose(window, 1);
@@ -214,7 +541,7 @@ int main(void)
 
     // TODO: These globals we will need to get rid of at some point
     // Initialize global_variables
-    cameraPos = glm::vec3(0.f, 0.f, 3.0f);
+    cameraPos = glm::vec3(0.f, 2.f, 3.0f);
     cameraFront = glm::vec3(.0f, .0f, -1.f);
     cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
     deltaTime = lastFrame = 0.f;
@@ -239,115 +566,12 @@ int main(void)
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetScrollCallback(window, scroll_callback);
 
-    ShaderProgram sp0;
-    shader_init(&sp0);
-    shader_set_source(&sp0, SHADERTYPE_VERTEX, (char*)"..\\shaders\\shader.vert");
-    shader_set_source(&sp0, SHADERTYPE_FRAGMENT, (char*)"..\\shaders\\shader.frag");
-    shader_load(&sp0);
-    shader_link(&sp0);
-
-    ShaderProgram lightSourceShader;
-    shader_init(&lightSourceShader);
-    shader_set_source(&lightSourceShader, SHADERTYPE_VERTEX, (char*)"..\\shaders\\shader.vert");
-    shader_set_source(&lightSourceShader, SHADERTYPE_FRAGMENT, (char*)"..\\shaders\\light.frag");
-    shader_load(&lightSourceShader);
-    shader_link(&lightSourceShader);
-
-    float vertices[] = {
-        // positions          // normals           // texture coords
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
-
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f, 1.0f,   0.0f, 0.0f,
-
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
-
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f
-    };
-
-    glm::vec3 cubePositions[] = {
-        glm::vec3( 0.0f,  0.0f,  0.0f), 
-        glm::vec3( 2.0f,  5.0f, -15.0f), 
-        glm::vec3(-1.5f, -2.2f, -2.5f),  
-        glm::vec3(-3.8f, -2.0f, -12.3f),  
-        glm::vec3( 2.4f, -0.4f, -3.5f),  
-        glm::vec3(-1.7f,  3.0f, -7.5f),  
-        glm::vec3( 1.3f, -2.0f, -2.5f),  
-        glm::vec3( 1.5f,  2.0f, -2.5f), 
-        glm::vec3( 1.5f,  0.2f, -1.5f), 
-        glm::vec3(-1.3f,  1.0f, -1.5f)  
-    };
-
-    glm::vec3 pointLightPositions[] = {
-        glm::vec3(0.7f, 0.2f, 2.0f),
-        glm::vec3(2.3f, -3.3f, -4.0f),
-        glm::vec3(-4.0f, 2.0f, -12.0f),
-        glm::vec3(0.0f, 0.0f, -3.0f),
-    };
-
-    uint VBO, VAO, EBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
-
-    glBindVertexArray(VAO);
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
-    glEnableVertexAttribArray(2);
-
-    // Light source
-    uint lightVAO;
-    glGenVertexArrays(1, &lightVAO);
-    glBindVertexArray(lightVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    // LOAD TEXTURE
-    unsigned int diffuseMap = LoadImage((char*)"..\\data\\container2.png");
-    unsigned int specularMap = LoadImage((char*)"..\\data\\container2_specular.png");
-    unsigned int emissionMap = LoadImage((char*)"..\\data\\matrix.jpg");
+    ShaderProgram hex_shader;
+    shader_init(&hex_shader);
+    shader_set_source(&hex_shader, SHADERTYPE_VERTEX, (char*)"..\\shaders\\shader.vert");
+    shader_set_source(&hex_shader, SHADERTYPE_FRAGMENT, (char*)"..\\shaders\\shader.frag");
+    shader_load(&hex_shader);
+    shader_link(&hex_shader);
 
     // "Unbind"
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -356,6 +580,10 @@ int main(void)
 
     glEnable(GL_DEPTH_TEST);
     float currentFrame = 0.f;
+
+    // TODO: MAKE FUNCTION CALLED MAKE HEX MAP THAT TAKES COLUMN AND ROW PARAMETERS
+    // Model backpack;
+    // model_load(&backpack, (char*)"..\\data\\backpack\\backpack.obj");
     while(!glfwWindowShouldClose(window))
     {
         currentFrame = glfwGetTime();
@@ -365,19 +593,6 @@ int main(void)
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        shader_use(&sp0);
-        shader_set_int(&sp0, (char*)("material.diffuse"), 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, diffuseMap);
-
-        shader_set_int(&sp0, (char*)("material.specular"), 1);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, specularMap);
-
-        shader_set_int(&sp0, (char*)("material.emission"), 2);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, emissionMap);
-
         glm::mat4 proj = glm::mat4(1.f);
 
         direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
@@ -386,112 +601,24 @@ int main(void)
         cameraFront = glm::normalize(direction);
         proj = glm::perspective(glm::radians(fov), 800.f / 600.f , 0.1f, 100.f);
         glm::mat4 view = lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
-        shader_set_matrix(&sp0, (char*)("projection"), glm::value_ptr(proj));
-        shader_set_matrix(&sp0, (char*)("view"), glm::value_ptr(view));
-        shader_set_vec3(&sp0, (char*)("viewPos"), cameraPos.x, cameraPos.y, cameraPos.z);
-        shader_set_float(&sp0, (char*)("material.shininess"), 64.0f);
 
+        shader_use(&hex_shader);
+        shader_set_matrix(&hex_shader, (char*)("projection"), glm::value_ptr(proj));
+        shader_set_matrix(&hex_shader, (char*)("view"), glm::value_ptr(view));
 
-        shader_set_vec3(&sp0, (char*)("dirLight.ambient"), .05f, .05f, .05f);
-        shader_set_vec3(&sp0, (char*)("dirLight.diffuse"), .4f, .4f, .4f);
-        shader_set_vec3(&sp0, (char*)("dirLight.specular"), .5f, .5f, .5f);
-        shader_set_vec3(&sp0, (char*)("dirLight.direction"), -.2f, -1.0f, -.3f);
-
-        // Spot Light
-        shader_set_vec3(&sp0, (char*)("spotLight.direction"), cameraFront.x, cameraFront.y, cameraFront.z);
-        shader_set_vec3(&sp0, (char*)("spotLight.position"), cameraPos.x, cameraPos.y, cameraPos.z);
-        shader_set_float(&sp0, (char*)("spotLight.innerCone"), glm::cos(glm::radians(12.5f)));
-        shader_set_float(&sp0, (char*)("spotLight.outerCone"), glm::cos(glm::radians(17.5f)));
-        shader_set_vec3(&sp0, (char*)("spotLight.ambient"), .2f, .2f, .2f);
-        shader_set_vec3(&sp0, (char*)("spotLight.diffuse"), .5f, .5f, .5f);
-        shader_set_vec3(&sp0, (char*)("spotLight.specular"), 1.f, 1.f, 1.f);
-
-        // Point Lights
-        shader_set_vec3(&sp0, (char*)("pointLights[0].position"), pointLightPositions[0].x, pointLightPositions[0].y, pointLightPositions[0].z);
-        shader_set_vec3(&sp0, (char*)("pointLights[0].ambient"), 0.2f, 0.2f, 0.2f);
-        shader_set_vec3(&sp0, (char*)("pointLights[0].diffuse"), 0.5f, 0.5f, 0.5f);
-        shader_set_vec3(&sp0, (char*)("pointLights[0].ambient"), 1.f, 1.f, 1.f);
-        shader_set_float(&sp0, (char*)("pointLights[0].constant"), 1.0f);
-        shader_set_float(&sp0, (char*)("pointLights[0].linear"), .09f);
-        shader_set_float(&sp0, (char*)("pointLights[0].quadratic"), .032f);
-        
-        shader_set_vec3(&sp0, (char*)("pointLights[1].position"), pointLightPositions[1].x, pointLightPositions[1].y, pointLightPositions[1].z);
-        shader_set_vec3(&sp0, (char*)("pointLights[1].ambient"), 0.2f, 0.2f, 0.2f);
-        shader_set_vec3(&sp0, (char*)("pointLights[1].diffuse"), 0.5f, 0.5f, 0.5f);
-        shader_set_vec3(&sp0, (char*)("pointLights[1].ambient"), 1.f, 1.f, 1.f);
-        shader_set_float(&sp0, (char*)("pointLights[1].constant"), 1.0f);
-        shader_set_float(&sp0, (char*)("pointLights[1].linear"), .09f);
-        shader_set_float(&sp0, (char*)("pointLights[1].quadratic"), .032f);
-        
-        shader_set_vec3(&sp0, (char*)("pointLights[2].position"), pointLightPositions[2].x, pointLightPositions[2].y, pointLightPositions[2].z);
-        shader_set_vec3(&sp0, (char*)("pointLights[2].ambient"), 0.2f, 0.2f, 0.2f);
-        shader_set_vec3(&sp0, (char*)("pointLights[2].diffuse"), 0.5f, 0.5f, 0.5f);
-        shader_set_vec3(&sp0, (char*)("pointLights[2].ambient"), 1.f, 1.f, 1.f);
-        shader_set_float(&sp0, (char*)("pointLights[2].constant"), 1.0f);
-        shader_set_float(&sp0, (char*)("pointLights[2].linear"), .09f);
-        shader_set_float(&sp0, (char*)("pointLights[2].quadratic"), .032f);
-        
-        shader_set_vec3(&sp0, (char*)("pointLights[3].position"), pointLightPositions[3].x, pointLightPositions[3].y, pointLightPositions[3].z);
-        shader_set_vec3(&sp0, (char*)("pointLights[3].ambient"), 0.2f, 0.2f, 0.2f);
-        shader_set_vec3(&sp0, (char*)("pointLights[3].diffuse"), 0.5f, 0.5f, 0.5f);
-        shader_set_vec3(&sp0, (char*)("pointLights[3].ambient"), 1.f, 1.f, 1.f);
-        shader_set_float(&sp0, (char*)("pointLights[3].constant"), 1.0f);
-        shader_set_float(&sp0, (char*)("pointLights[3].linear"), .09f);
-        shader_set_float(&sp0, (char*)("pointLights[3].quadratic"), .032f);
-
-#if 0
-        for(int i = 0; i < 4; ++i)
-        {
-            std::string currentLightString = "pointLights[0]";
-            currentLightString[12] = (char)i;
-            shader_set_vec3(&sp0, const_cast<char*>((currentLightString + std::string(".ambient")).c_str()), .2f, .2f, .2f);
-            shader_set_vec3(&sp0, const_cast<char*>((currentLightString + std::string(".diffuse")).c_str()), .5f, .5f, .5f);
-            shader_set_vec3(&sp0, const_cast<char*>((currentLightString + std::string(".specular")).c_str()), 1.f, 1.f, 1.f);
-            shader_set_float(&sp0, const_cast<char*>((currentLightString + std::string(".constant")).c_str()), 1.0f);
-            shader_set_float(&sp0, const_cast<char*>((currentLightString + std::string(".linear")).c_str()), 0.09f);
-            shader_set_float(&sp0, const_cast<char*>((currentLightString + std::string(".quadratic")).c_str()), 0.032f);
-            shader_set_vec3(&sp0, const_cast<char*>((currentLightString + std::string(".position")).c_str()), pointLightPositions[i].x, pointLightPositions[i].y, pointLightPositions[i].z);
-        }
-#endif
-        glBindVertexArray(VAO);
-
-        for(int i = 0; i < 10; ++i)
-        {
-            glm::mat4 model = glm::mat4(1.f);
-            model = glm::translate(model, cubePositions[i]);
-            float angle = 20.0f * i;
-            model = glm::rotate(model, glm::radians(angle), glm::vec3(1.0f, 0.3f, 0.5f));
-            shader_set_matrix(&sp0, (char*)"model", glm::value_ptr(model));
-
-            glDrawArrays(GL_TRIANGLES, 0, 36);
-        }
-
-        for(int i = 0; i < 4; ++i)
-        {
-            glm::mat4 model = glm::mat4(1.f);
-            model = glm::translate(model, pointLightPositions[i]);
-            model = glm::scale(model, glm::vec3(0.2f));
-
-            shader_use(&lightSourceShader);
-            shader_set_matrix(&lightSourceShader, (char*)("projection"), glm::value_ptr(proj));
-            shader_set_matrix(&lightSourceShader, (char*)("view"), glm::value_ptr(view));
-            shader_set_matrix(&lightSourceShader, (char*)("model"), glm::value_ptr(model));
-            glBindVertexArray(lightVAO);
-            glDrawArrays(GL_TRIANGLES, 0, 36);
-        }
-
-
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(0.f, 0.f, 0.f));
+        model = glm::scale(model, glm::vec3(1.f, 1.f, 1.f));
+        // MODEL STUFF
+        shader_set_matrix(&hex_shader, (char*)"model", glm::value_ptr(model));
+        DrawHex(&hex);
         glfwSwapBuffers(window);
         glfwPollEvents();
 
         lastFrame = currentFrame;
     }
 
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &EBO);
-    shader_delete(&sp0);
-    shader_delete(&lightSourceShader);
+    shader_delete(&hex_shader);
     glfwTerminate();
     return 0;
 }
